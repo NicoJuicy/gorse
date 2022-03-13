@@ -11,6 +11,7 @@ require (
 	github.com/emicklei/go-restful-openapi/v2 v2.3.0
 	github.com/emicklei/go-restful/v3 v3.5.2
 	github.com/go-redis/redis/v8 v8.11.0
+	github.com/go-resty/resty/v2 v2.7.0
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/gorilla/securecookie v1.1.1
 	github.com/gorse-io/dashboard v0.0.0-20220312053149-edd363d0232a
