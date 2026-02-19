@@ -44,6 +44,7 @@ func init() {
 		database := new(Redis)
 		database.client = redis.NewClient(opt)
 		database.TablePrefix = storage.TablePrefix(tablePrefix)
+		database.maxSearchResults = storage.NewOptions(opts...).MaxSearchResults
 		if err = redisotel.InstrumentTracing(database.client, redisotel.WithAttributes(semconv.DBSystemRedis)); err != nil {
 			log.Logger().Error("failed to add tracing for redis", zap.Error(err))
 			return nil, errors.Trace(err)
@@ -65,6 +66,7 @@ func init() {
 		database := new(Redis)
 		database.client = redis.NewClusterClient(opt)
 		database.TablePrefix = storage.TablePrefix(tablePrefix)
+		database.maxSearchResults = storage.NewOptions(opts...).MaxSearchResults
 		if err = redisotel.InstrumentTracing(database.client, redisotel.WithAttributes(semconv.DBSystemRedis)); err != nil {
 			log.Logger().Error("failed to add tracing for redis", zap.Error(err))
 			return nil, errors.Trace(err)
@@ -76,7 +78,8 @@ func init() {
 // Redis cache storage.
 type Redis struct {
 	storage.TablePrefix
-	client redis.UniversalClient
+	client           redis.UniversalClient
+	maxSearchResults int
 }
 
 // Close redis connection.
@@ -327,43 +330,68 @@ func (r *Redis) UpdateScores(ctx context.Context, collections []string, subset *
 	if subset != nil {
 		fmt.Fprintf(&builder, " @subset:{ %s }", escape(*subset))
 	}
+	limit := r.maxSearchResults
+	if limit <= 0 {
+		limit = 10000
+	}
+
+	// Two-phase update:
+	// 1) collect matched document IDs with pagination,
+	// 2) mutate documents by key.
+	// This avoids pagination drift when patch.Score changes the sort order.
+	keys := make([]string, 0)
+	keySet := make(map[string]struct{})
+	offset := 0
 	for {
 		// search documents
 		result, err := r.client.FTSearchWithArgs(ctx, r.DocumentTable(), builder.String(), &redis.FTSearchOptions{
 			SortBy:      []redis.FTSearchSortBy{{FieldName: "score", Desc: true}},
-			LimitOffset: 0,
-			Limit:       10000,
+			LimitOffset: offset,
+			Limit:       limit,
 		}).Result()
 		if err != nil {
 			return errors.Trace(err)
 		}
-		// update documents
+		if len(result.Docs) == 0 {
+			break
+		}
+		newKeys := 0
 		for _, doc := range result.Docs {
-			key := doc.ID
-			values := make([]any, 0)
-			if patch.Score != nil {
-				values = append(values, "score", *patch.Score)
-			}
-			if patch.IsHidden != nil {
-				values = append(values, "is_hidden", *patch.IsHidden)
-			}
-			if patch.Categories != nil {
-				values = append(values, "categories", encodeCategories(patch.Categories))
-			}
-			if err = r.client.Watch(ctx, func(tx *redis.Tx) error {
-				if exist, err := tx.Exists(ctx, key).Result(); err != nil {
-					return err
-				} else if exist == 0 {
-					return nil
-				}
-				return tx.HSet(ctx, key, values...).Err()
-			}, key); err != nil {
-				return errors.Trace(err)
+			if _, exists := keySet[doc.ID]; !exists {
+				keySet[doc.ID] = struct{}{}
+				keys = append(keys, doc.ID)
+				newKeys++
 			}
 		}
-		// break if no more documents
-		if result.Total <= len(result.Docs) {
+		offset += len(result.Docs)
+		// Stop when:
+		// 1) the last page is shorter than the limit (common Redis behavior), or
+		// 2) no new keys are discovered (defensive for engines with non-standard total/offset semantics).
+		if len(result.Docs) < limit || newKeys == 0 {
 			break
+		}
+	}
+
+	values := make([]any, 0)
+	if patch.Score != nil {
+		values = append(values, "score", *patch.Score)
+	}
+	if patch.IsHidden != nil {
+		values = append(values, "is_hidden", *patch.IsHidden)
+	}
+	if patch.Categories != nil {
+		values = append(values, "categories", encodeCategories(patch.Categories))
+	}
+	for _, key := range keys {
+		if err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			if exist, err := tx.Exists(ctx, key).Result(); err != nil {
+				return err
+			} else if exist == 0 {
+				return nil
+			}
+			return tx.HSet(ctx, key, values...).Err()
+		}, key); err != nil {
+			return errors.Trace(err)
 		}
 	}
 	return nil
