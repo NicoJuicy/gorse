@@ -932,30 +932,37 @@ func (suite *MasterAPITestSuite) TestGetRankerPrompt() {
 	suite.NoError(err)
 
 	// render template
-	template := "user={{ user.UserId }}\n" +
-		"feedback={% for f in feedback %}{{ f.Item.ItemId }}{% if not loop.last %}, {% endif %}{% endfor %}\n" +
-		"items={% for i in items %}{{ i.ItemId }}{% if not loop.last %}, {% endif %}{% endfor %}"
-	promptBase64 := base64.StdEncoding.EncodeToString([]byte(template))
+	queryTpl := "user={{ user.UserId }}\n" +
+		"feedback={% for f in feedback %}{{ f.Item.ItemId }}{% if not loop.last %}, {% endif %}{% endfor %}"
+	documentTpl := "item={{ item.ItemId }}"
+	queryTplBase64 := base64.StdEncoding.EncodeToString([]byte(queryTpl))
+	documentTplBase64 := base64.StdEncoding.EncodeToString([]byte(documentTpl))
+
 	// latest 10 feedback items: fb-11 to fb-02
 	feedbackList := []string{}
 	for i := 11; i >= 2; i-- {
 		feedbackList = append(feedbackList, fmt.Sprintf("fb-%02d", i))
 	}
-	expected := fmt.Sprintf(
-		"user=%s\nfeedback=%s\nitems=lt-3, lt-2, lt-1",
+	expectedQuery := fmt.Sprintf(
+		"user=%s\nfeedback=%s",
 		user.UserId,
 		strings.Join(feedbackList, ", "),
 	)
+	expectedDocuments := []string{"item=lt-3", "item=lt-2", "item=lt-1"}
 
 	apitest.New().
 		Handler(suite.handler).
 		Get("/api/dashboard/ranker/prompt").
 		Header("Cookie", suite.cookie).
-		Query("prompt", promptBase64).
+		Query("query-template", queryTplBase64).
+		Query("document-template", documentTplBase64).
 		Query("user-id", user.UserId).
 		Expect(suite.T()).
 		Status(http.StatusOK).
-		Body(expected).
+		Body(marshal(suite.T(), RerankerPrompt{
+			Query:     expectedQuery,
+			Documents: expectedDocuments,
+		})).
 		End()
 }
 

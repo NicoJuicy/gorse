@@ -73,6 +73,11 @@ type UserInfo struct {
 	AuthType   string `json:"auth_type"`
 }
 
+type RerankerPrompt struct {
+	Query     string   `json:"query"`
+	Documents []string `json:"documents"`
+}
+
 func (m *Master) CreateWebService() {
 	ws := m.WebService
 	ws.Consumes(restful.MIME_JSON).Produces(restful.MIME_JSON)
@@ -238,10 +243,11 @@ func (m *Master) CreateWebService() {
 	ws.Route(ws.GET("/dashboard/ranker/prompt").To(m.getRankerPrompt).
 		Doc("Get ranker prompt.").
 		Metadata(restfulspec.KeyOpenAPITags, []string{"dashboard"}).
-		Param(ws.QueryParameter("prompt", "prompt template").DataType("string")).
+		Param(ws.QueryParameter("query-template", "query template (base64)").DataType("string")).
+		Param(ws.QueryParameter("document-template", "document template (base64)").DataType("string")).
 		Param(ws.QueryParameter("user-id", "identifier of the user").DataType("string")).
-		Returns(http.StatusOK, "OK", "").
-		Writes(""))
+		Returns(http.StatusOK, "OK", RerankerPrompt{}).
+		Writes(RerankerPrompt{}))
 }
 
 // SinglePageAppFileSystem is the file system for single page app.
@@ -1137,9 +1143,10 @@ func (m *Master) getRankerPrompt(request *restful.Request, response *restful.Res
 	if request != nil && request.Request != nil {
 		ctx = request.Request.Context()
 	}
-	promptBase64 := request.QueryParameter("prompt")
-	if promptBase64 == "" {
-		server.BadRequest(response, fmt.Errorf("prompt is required"))
+	queryTplBase64 := request.QueryParameter("query-template")
+	documentTplBase64 := request.QueryParameter("document-template")
+	if queryTplBase64 == "" || documentTplBase64 == "" {
+		server.BadRequest(response, fmt.Errorf("query-template and document-template are required"))
 		return
 	}
 	userId := request.QueryParameter("user-id")
@@ -1147,12 +1154,24 @@ func (m *Master) getRankerPrompt(request *restful.Request, response *restful.Res
 		server.BadRequest(response, fmt.Errorf("user-id is required"))
 		return
 	}
-	promptBytes, err := base64.StdEncoding.DecodeString(promptBase64)
+
+	queryTplBytes, err := base64.StdEncoding.DecodeString(queryTplBase64)
 	if err != nil {
-		server.BadRequest(response, fmt.Errorf("invalid prompt encoding: %w", err))
+		server.BadRequest(response, fmt.Errorf("invalid query-template encoding: %w", err))
 		return
 	}
-	template, err := gonja.FromString(string(promptBytes))
+	queryTpl, err := gonja.FromString(string(queryTplBytes))
+	if err != nil {
+		server.BadRequest(response, err)
+		return
+	}
+
+	documentTplBytes, err := base64.StdEncoding.DecodeString(documentTplBase64)
+	if err != nil {
+		server.BadRequest(response, fmt.Errorf("invalid document-template encoding: %w", err))
+		return
+	}
+	documentTpl, err := gonja.FromString(string(documentTplBytes))
 	if err != nil {
 		server.BadRequest(response, err)
 		return
@@ -1207,17 +1226,35 @@ func (m *Master) getRankerPrompt(request *restful.Request, response *restful.Res
 		return
 	}
 
-	var buf strings.Builder
-	tplCtx := exec.NewContext(map[string]any{
+	// render query
+	var queryBuf strings.Builder
+	queryCtx := exec.NewContext(map[string]any{
 		"user":     &user,
 		"feedback": feedbackItems,
-		"items":    latestItems,
 	})
-	if err := template.Execute(&buf, tplCtx); err != nil {
+	if err := queryTpl.Execute(&queryBuf, queryCtx); err != nil {
 		server.InternalServerError(response, err)
 		return
 	}
-	server.Text(response, buf.String())
+
+	// render documents
+	documents := make([]string, len(latestItems))
+	for i, item := range latestItems {
+		var docBuf strings.Builder
+		docCtx := exec.NewContext(map[string]any{
+			"item": item,
+		})
+		if err := documentTpl.Execute(&docBuf, docCtx); err != nil {
+			server.InternalServerError(response, err)
+			return
+		}
+		documents[i] = docBuf.String()
+	}
+
+	server.Ok(response, RerankerPrompt{
+		Query:     queryBuf.String(),
+		Documents: documents,
+	})
 }
 
 func (m *Master) importExportUsers(response http.ResponseWriter, request *http.Request) {
