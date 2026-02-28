@@ -18,6 +18,7 @@ import (
 	"context"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorse-io/gorse/storage"
@@ -28,6 +29,7 @@ import (
 const (
 	qdrantPayloadCategoriesKey = "categories"
 	qdrantPayloadIdKey         = "id"
+	qdrantPayloadTimestampKey  = "timestamp"
 )
 
 func init() {
@@ -62,6 +64,10 @@ func (db *Qdrant) Init() error {
 	return nil
 }
 
+func (db *Qdrant) Optimize() error {
+	return nil
+}
+
 func (db *Qdrant) Close() error {
 	return db.client.Close()
 }
@@ -89,6 +95,15 @@ func (db *Qdrant) AddCollection(ctx context.Context, name string, dimensions int
 			Distance: qdrantDistance,
 		}),
 	})
+	if err != nil {
+		return errors.Trace(err)
+	}
+	_, err = db.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
+		CollectionName: name,
+		Wait:           new(true),
+		FieldName:      qdrantPayloadTimestampKey,
+		FieldType:      qdrant.FieldType_FieldTypeInteger.Enum(),
+	})
 	return errors.Trace(err)
 }
 
@@ -107,6 +122,7 @@ func (db *Qdrant) AddVectors(ctx context.Context, collection string, vectors []V
 			Payload: map[string]*qdrant.Value{
 				qdrantPayloadCategoriesKey: qdrantListValue(vector.Categories),
 				qdrantPayloadIdKey:         qdrant.NewValueString(vector.Id),
+				qdrantPayloadTimestampKey:  qdrant.NewValueInt(vector.Timestamp.UnixMilli()),
 			},
 			Vectors: qdrant.NewVectorsDense(vector.Vector),
 		})
@@ -118,6 +134,19 @@ func (db *Qdrant) AddVectors(ctx context.Context, collection string, vectors []V
 	return errors.Trace(err)
 }
 
+func (db *Qdrant) DeleteVectors(ctx context.Context, collection string, timestamp time.Time) error {
+	lt := float64(timestamp.UnixMilli())
+	_, err := db.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: collection,
+		Points: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewRange(qdrantPayloadTimestampKey, &qdrant.Range{Lt: &lt}),
+			},
+		}),
+	})
+	return errors.Trace(err)
+}
+
 func (db *Qdrant) QueryVectors(ctx context.Context, collection string, q []float32, categories []string, topK int) ([]Vector, error) {
 	if topK <= 0 {
 		return []Vector{}, nil
@@ -125,7 +154,7 @@ func (db *Qdrant) QueryVectors(ctx context.Context, collection string, q []float
 	request := &qdrant.QueryPoints{
 		CollectionName: collection,
 		Query:          qdrant.NewQueryDense(q),
-		Limit:          qdrant.PtrOf(uint64(topK)),
+		Limit:          new(uint64(topK)),
 		WithPayload:    qdrant.NewWithPayloadEnable(true),
 		WithVectors:    qdrant.NewWithVectorsEnable(true),
 	}
