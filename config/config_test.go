@@ -254,6 +254,12 @@ func TestBindEnv(t *testing.T) {
 		{"RERANKER_AUTH_TOKEN", "<reranker_auth_token>"},
 		{"RERANKER_URL", "<reranker_url>"},
 		{"RERANKER_MODEL", "<reranker_model>"},
+		{"GORSE_QUOTA_MAX_USERS_COUNT", "9"},
+		{"GORSE_QUOTA_MAX_ITEMS_COUNT", "10"},
+		{"GORSE_QUOTA_MAX_LABELS_SIZE", "11"},
+		{"GORSE_QUOTA_MAX_COMMENT_SIZE", "12"},
+		{"GORSE_QUOTA_MAX_CATEGORIES_COUNT", "13"},
+		{"GORSE_QUOTA_MAX_CATEGORIES_SIZE", "14"},
 	}
 	for _, variable := range variables {
 		t.Setenv(variable.key, variable.value)
@@ -305,6 +311,12 @@ func TestBindEnv(t *testing.T) {
 	assert.Equal(t, "<reranker_auth_token>", config.Recommend.Ranker.RerankerAPI.AuthToken)
 	assert.Equal(t, "<reranker_url>", config.Recommend.Ranker.RerankerAPI.URL)
 	assert.Equal(t, "<reranker_model>", config.Recommend.Ranker.RerankerAPI.Model)
+	assert.Equal(t, 9, config.Quota.MaxUsersCount)
+	assert.Equal(t, 10, config.Quota.MaxItemsCount)
+	assert.Equal(t, 11, config.Quota.MaxLabelsSize)
+	assert.Equal(t, 12, config.Quota.MaxCommentSize)
+	assert.Equal(t, 13, config.Quota.MaxCategoriesCount)
+	assert.Equal(t, 14, config.Quota.MaxCategoriesSize)
 
 	// check default values
 	assert.Equal(t, 100, config.Recommend.CacheSize)
@@ -529,6 +541,12 @@ func (s *ValidateTestSuite) TestSearchColumns() {
 
 func TestValidate(t *testing.T) {
 	suite.Run(t, new(ValidateTestSuite))
+}
+
+func (s *ValidateTestSuite) TestQuota() {
+	s.NoError(s.Validate())
+	s.Quota.MaxLabelsSize = -1
+	s.Error(s.Validate())
 }
 
 func (s *ValidateTestSuite) TestCacheStore() {

@@ -69,6 +69,7 @@ type Config struct {
 	OIDC      OIDCConfig      `mapstructure:"oidc"`
 	OpenAI    OpenAIConfig    `mapstructure:"openai"`
 	Blob      BlobConfig      `mapstructure:"blob"`
+	Quota     QuotaConfig     `mapstructure:"quota"`
 }
 
 // DatabaseConfig is the configuration for the database.
@@ -463,6 +464,16 @@ type AzureBlobConfig struct {
 	ConnectionString string `mapstructure:"connection_string"`
 }
 
+// QuotaConfig is the configuration for resource quotas.
+type QuotaConfig struct {
+	MaxUsersCount      int `mapstructure:"max_users_count" validate:"gte=0"`      // Max total number of Users (0 = no limit)
+	MaxItemsCount      int `mapstructure:"max_items_count" validate:"gte=0"`      // Max total number of Items (0 = no limit)
+	MaxLabelsSize      int `mapstructure:"max_labels_size" validate:"gte=0"`      // Max size of Labels in bytes (0 = no limit)
+	MaxCommentSize     int `mapstructure:"max_comment_size" validate:"gte=0"`     // Max size of Comment in bytes (0 = no limit)
+	MaxCategoriesCount int `mapstructure:"max_categories_count" validate:"gte=0"` // Max number of Categories per item (0 = no limit)
+	MaxCategoriesSize  int `mapstructure:"max_categories_size" validate:"gte=0"`  // Max size of Categories in bytes (0 = no limit)
+}
+
 func GetDefaultConfig() *Config {
 	return &Config{
 		Database: DatabaseConfig{
@@ -537,6 +548,14 @@ func GetDefaultConfig() *Config {
 		},
 		Blob: BlobConfig{
 			URI: MkDir("blob"),
+		},
+		Quota: QuotaConfig{
+			MaxUsersCount:      0, // No limit by default
+			MaxItemsCount:      0, // No limit by default
+			MaxLabelsSize:      0, // No limit by default
+			MaxCommentSize:     0, // No limit by default
+			MaxCategoriesCount: 0, // No limit by default
+			MaxCategoriesSize:  0, // No limit by default
 		},
 	}
 }
@@ -680,6 +699,13 @@ func setDefault() {
 	viper.SetDefault("tracing.sampler", defaultConfig.Tracing.Sampler)
 	// [blob]
 	viper.SetDefault("blob.uri", defaultConfig.Blob.URI)
+	// [quota]
+	viper.SetDefault("quota.max_users_count", defaultConfig.Quota.MaxUsersCount)
+	viper.SetDefault("quota.max_items_count", defaultConfig.Quota.MaxItemsCount)
+	viper.SetDefault("quota.max_labels_size", defaultConfig.Quota.MaxLabelsSize)
+	viper.SetDefault("quota.max_comment_size", defaultConfig.Quota.MaxCommentSize)
+	viper.SetDefault("quota.max_categories_count", defaultConfig.Quota.MaxCategoriesCount)
+	viper.SetDefault("quota.max_categories_size", defaultConfig.Quota.MaxCategoriesSize)
 }
 
 type configBinding struct {
@@ -733,6 +759,12 @@ var bindings = []configBinding{
 	{"recommend.ranker.reranker_api.url", "RERANKER_URL"},
 	{"recommend.ranker.reranker_api.model", "RERANKER_MODEL"},
 	{"recommend.ranker.reranker_api.auth_token", "RERANKER_AUTH_TOKEN"},
+	{"quota.max_users_count", "GORSE_QUOTA_MAX_USERS_COUNT"},
+	{"quota.max_items_count", "GORSE_QUOTA_MAX_ITEMS_COUNT"},
+	{"quota.max_labels_size", "GORSE_QUOTA_MAX_LABELS_SIZE"},
+	{"quota.max_comment_size", "GORSE_QUOTA_MAX_COMMENT_SIZE"},
+	{"quota.max_categories_count", "GORSE_QUOTA_MAX_CATEGORIES_COUNT"},
+	{"quota.max_categories_size", "GORSE_QUOTA_MAX_CATEGORIES_SIZE"},
 }
 
 // LoadConfig loads configuration from toml file.

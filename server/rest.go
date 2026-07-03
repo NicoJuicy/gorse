@@ -32,6 +32,7 @@ import (
 	"github.com/gorse-io/gorse/common/event"
 	"github.com/gorse-io/gorse/common/expression"
 	"github.com/gorse-io/gorse/common/heap"
+	"github.com/gorse-io/gorse/common/jsonutil"
 	"github.com/gorse-io/gorse/common/log"
 	"github.com/gorse-io/gorse/config"
 	"github.com/gorse-io/gorse/logics"
@@ -1037,6 +1038,99 @@ type Success struct {
 	RowAffected int
 }
 
+func (s *RestServer) checkLabelsSize(labels any) error {
+	limit := s.Config.Quota.MaxLabelsSize
+	if limit <= 0 || labels == nil {
+		return nil
+	}
+	buf := jsonutil.MustMarshal(labels)
+	if len(buf) > limit {
+		return errors.Errorf("labels size exceeds limit (%d > %d bytes)", len(buf), limit)
+	}
+	return nil
+}
+
+func (s *RestServer) checkCategoriesSize(categories []string) error {
+	countLimit := s.Config.Quota.MaxCategoriesCount
+	if countLimit > 0 && len(categories) > countLimit {
+		return errors.Errorf("item categories count exceeds limit (%d > %d)",
+			len(categories), countLimit)
+	}
+	sizeLimit := s.Config.Quota.MaxCategoriesSize
+	if sizeLimit <= 0 {
+		return nil
+	}
+	for _, category := range categories {
+		if len(category) > sizeLimit {
+			return errors.Errorf("category size exceeds limit (%d > %d bytes)", len(category), sizeLimit)
+		}
+	}
+	return nil
+}
+
+func (s *RestServer) checkCommentSize(comment string) error {
+	limit := s.Config.Quota.MaxCommentSize
+	if limit > 0 && len(comment) > limit {
+		return errors.Errorf("comment size exceeds limit (%d > %d bytes)", len(comment), limit)
+	}
+	return nil
+}
+
+func (s *RestServer) checkItemSize(item data.Item) error {
+	if err := s.checkLabelsSize(item.Labels); err != nil {
+		return err
+	}
+	if err := s.checkCommentSize(item.Comment); err != nil {
+		return err
+	}
+	if err := s.checkCategoriesSize(item.Categories); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *RestServer) checkUserSize(user data.User) error {
+	if err := s.checkLabelsSize(user.Labels); err != nil {
+		return err
+	}
+	if err := s.checkCommentSize(user.Comment); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *RestServer) checkUserCountLimit(ctx context.Context, userIds []string) error {
+	limit := s.Config.Quota.MaxUsersCount
+	if limit <= 0 {
+		return nil
+	}
+	totalUsers, err := s.DataClient.CountUsers(ctx)
+	if err != nil {
+		log.Logger().Warn("failed to check user count limit", zap.Error(err))
+		return nil
+	}
+	if totalUsers+len(userIds) > limit {
+		return errors.Errorf("users count exceeds limit (%d > %d)", totalUsers+len(userIds), limit)
+	}
+	return nil
+}
+
+func (s *RestServer) checkItemCountLimit(ctx context.Context, itemIds []string) error {
+	limit := s.Config.Quota.MaxItemsCount
+	if limit <= 0 {
+		return nil
+	}
+	totalItems, err := s.DataClient.CountItems(ctx)
+	if err != nil {
+		log.Logger().Warn("failed to check item count limit", zap.Error(err))
+		return nil
+	}
+	if totalItems+len(itemIds) > limit {
+		return errors.Errorf("items count exceeds limit (%d > %d)", totalItems+len(itemIds), limit)
+	}
+	return nil
+}
+
 func (s *RestServer) insertUser(request *restful.Request, response *restful.Response) {
 	ctx := context.Background()
 	if request != nil && request.Request != nil {
@@ -1051,6 +1145,14 @@ func (s *RestServer) insertUser(request *restful.Request, response *restful.Resp
 	// validate labels
 	if err := data.ValidateLabels(temp.Labels); err != nil {
 		BadRequest(response, err)
+		return
+	}
+	if err := s.checkUserSize(temp); err != nil {
+		TooManyRequests(response, err)
+		return
+	}
+	if err := s.checkUserCountLimit(ctx, []string{temp.UserId}); err != nil {
+		TooManyRequests(response, err)
 		return
 	}
 	if err := s.DataClient.BatchInsertUsers(ctx, []data.User{temp}); err != nil {
@@ -1082,6 +1184,16 @@ func (s *RestServer) modifyUser(request *restful.Request, response *restful.Resp
 	if err := data.ValidateLabels(patch.Labels); err != nil {
 		BadRequest(response, err)
 		return
+	}
+	if err := s.checkLabelsSize(patch.Labels); err != nil {
+		TooManyRequests(response, err)
+		return
+	}
+	if patch.Comment != nil {
+		if err := s.checkCommentSize(*patch.Comment); err != nil {
+			TooManyRequests(response, err)
+			return
+		}
 	}
 	if err := s.DataClient.ModifyUser(ctx, userId, patch); err != nil {
 		InternalServerError(response, err)
@@ -1131,6 +1243,16 @@ func (s *RestServer) insertUsers(request *restful.Request, response *restful.Res
 			BadRequest(response, err)
 			return
 		}
+		if err := s.checkUserSize(user); err != nil {
+			TooManyRequests(response, err)
+			return
+		}
+	}
+	if err := s.checkUserCountLimit(ctx, lo.Map(temp, func(user data.User, index int) string {
+		return user.UserId
+	})); err != nil {
+		TooManyRequests(response, err)
+		return
 	}
 	// range temp and achieve user
 	if err := s.DataClient.BatchInsertUsers(ctx, temp); err != nil {
@@ -1257,6 +1379,12 @@ func (s *RestServer) batchInsertItems(ctx context.Context, response *restful.Res
 	for _, item := range existedItems {
 		existedItemsSet[item.ItemId] = item
 	}
+	if err = s.checkItemCountLimit(ctx, lo.Map(temp, func(item Item, index int) string {
+		return item.ItemId
+	})); err != nil {
+		TooManyRequests(response, err)
+		return
+	}
 	loadExistedItemsTime = time.Since(start)
 
 	start = time.Now()
@@ -1270,14 +1398,19 @@ func (s *RestServer) batchInsertItems(ctx context.Context, response *restful.Res
 				return
 			}
 		}
-		items = append(items, data.Item{
+		dataItem := data.Item{
 			ItemId:     item.ItemId,
 			IsHidden:   item.IsHidden,
 			Categories: item.Categories,
 			Timestamp:  timestamp,
 			Labels:     item.Labels,
 			Comment:    item.Comment,
-		})
+		}
+		if err = s.checkItemSize(dataItem); err != nil {
+			TooManyRequests(response, err)
+			return
+		}
+		items = append(items, dataItem)
 		// update items cache
 		if err = s.CacheClient.UpdateScores(ctx, cache.ItemCache, nil, item.ItemId, cache.ScorePatch{
 			Categories: withWildCard(item.Categories),
@@ -1373,6 +1506,22 @@ func (s *RestServer) modifyItem(request *restful.Request, response *restful.Resp
 	if err := data.ValidateLabels(patch.Labels); err != nil {
 		BadRequest(response, err)
 		return
+	}
+	if err := s.checkLabelsSize(patch.Labels); err != nil {
+		TooManyRequests(response, err)
+		return
+	}
+	if patch.Comment != nil {
+		if err := s.checkCommentSize(*patch.Comment); err != nil {
+			TooManyRequests(response, err)
+			return
+		}
+	}
+	if patch.Categories != nil {
+		if err := s.checkCategoriesSize(patch.Categories); err != nil {
+			TooManyRequests(response, err)
+			return
+		}
 	}
 	// remove hidden item from cache
 	if patch.IsHidden != nil {
@@ -1498,6 +1647,10 @@ func (s *RestServer) insertItemCategory(request *restful.Request, response *rest
 	if !lo.Contains(item.Categories, category) {
 		item.Categories = append(item.Categories, category)
 	}
+	if err = s.checkItemSize(item); err != nil {
+		TooManyRequests(response, err)
+		return
+	}
 	// insert category to database
 	if err = s.DataClient.BatchInsertItems(ctx, []data.Item{item}); err != nil {
 		InternalServerError(response, err)
@@ -1593,6 +1746,30 @@ func (s *RestServer) insertFeedback(overwrite bool) func(request *restful.Reques
 			feedback[i], err = feedbackLiterTime[i].ToDataFeedback()
 			if err != nil {
 				BadRequest(response, err)
+				return
+			}
+			if err = data.ValidateLabels(feedback[i].Labels); err != nil {
+				BadRequest(response, err)
+				return
+			}
+			if err = s.checkLabelsSize(feedback[i].Labels); err != nil {
+				TooManyRequests(response, err)
+				return
+			}
+			if err = s.checkCommentSize(feedback[i].Comment); err != nil {
+				TooManyRequests(response, err)
+				return
+			}
+		}
+		if s.Config.Server.AutoInsertUser {
+			if err = s.checkUserCountLimit(ctx, users.ToSlice()); err != nil {
+				TooManyRequests(response, err)
+				return
+			}
+		}
+		if s.Config.Server.AutoInsertItem {
+			if err = s.checkItemCountLimit(ctx, items.ToSlice()); err != nil {
+				TooManyRequests(response, err)
 				return
 			}
 		}
@@ -1773,6 +1950,15 @@ func BadRequest(response *restful.Response, err error) {
 	response.Header().Set("Access-Control-Allow-Origin", "*")
 	log.ResponseLogger(response).Error("bad request", zap.Error(err))
 	if err = response.WriteError(http.StatusBadRequest, err); err != nil {
+		log.ResponseLogger(response).Error("failed to write error", zap.Error(err))
+	}
+}
+
+// TooManyRequests returns a too many requests error.
+func TooManyRequests(response *restful.Response, err error) {
+	response.Header().Set("Access-Control-Allow-Origin", "*")
+	log.ResponseLogger(response).Error("too many requests", zap.Error(err))
+	if err = response.WriteError(http.StatusTooManyRequests, err); err != nil {
 		log.ResponseLogger(response).Error("failed to write error", zap.Error(err))
 	}
 }

@@ -442,3 +442,23 @@ embedding_tpm = 1200000
 
 # Log file for OpenAI API.
 log_file = "openai.log"
+
+[quota]
+
+# Maximum total number of Users. 0 means no limit.
+max_users_count = 0
+
+# Maximum total number of Items. 0 means no limit.
+max_items_count = 0
+
+# Maximum size of Labels in bytes. Multi-byte UTF-8 characters count by bytes. 0 means no limit.
+max_labels_size = 0
+
+# Maximum size of Comment in bytes. Multi-byte UTF-8 characters count by bytes. 0 means no limit.
+max_comment_size = 0
+
+# Maximum number of Categories per item. 0 means no limit.
+max_categories_count = 0
+
+# Maximum size of Categories JSON in bytes. Multi-byte UTF-8 characters count by bytes. 0 means no limit.
+max_categories_size = 0
