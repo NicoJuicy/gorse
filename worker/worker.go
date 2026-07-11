@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorse-io/gorse/cmd/version"
@@ -98,6 +99,10 @@ type Worker struct {
 	ticker       *time.Ticker
 	syncedChan   chan struct{} // meta synced events
 	pulledChan   chan struct{} // model pulled events
+	done         chan struct{}
+	shutdown     sync.Once
+	syncWait     sync.WaitGroup
+	httpServer   *http.Server
 }
 
 // NewWorker creates a new worker node.
@@ -132,6 +137,7 @@ func NewWorker(
 		ticker:       time.NewTicker(interval),
 		syncedChan:   make(chan struct{}, 1),
 		pulledChan:   make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -254,7 +260,11 @@ func (w *Worker) Sync() {
 		if w.testMode {
 			return
 		}
-		time.Sleep(w.Config.Master.MetaTimeout)
+		select {
+		case <-time.After(w.Config.Master.MetaTimeout):
+		case <-w.done:
+			return
+		}
 	}
 }
 
@@ -324,9 +334,40 @@ func (w *Worker) ServeHTTP() {
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/api/health/live", w.checkLive)
 	http.HandleFunc("/api/health/ready", w.checkReady)
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", w.httpHost, w.httpPort), nil)
-	if err != nil {
+	w.httpServer = &http.Server{Addr: fmt.Sprintf("%s:%d", w.httpHost, w.httpPort)}
+	err := w.httpServer.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Logger().Fatal("failed to start http server", zap.Error(err))
+	}
+}
+
+func (w *Worker) Shutdown() {
+	w.shutdown.Do(func() {
+		close(w.done)
+		w.ticker.Stop()
+	})
+}
+
+func (w *Worker) close() {
+	if w.httpServer != nil {
+		if err := w.httpServer.Shutdown(context.TODO()); err != nil {
+			log.Logger().Error("failed to shutdown http server", zap.Error(err))
+		}
+	}
+	if w.conn != nil {
+		if err := w.conn.Close(); err != nil {
+			log.Logger().Error("failed to close master connection", zap.Error(err))
+		}
+	}
+	w.syncWait.Wait()
+	if err := w.DataClient.Close(); err != nil {
+		log.Logger().Error("failed to close data database", zap.Error(err))
+	}
+	if err := w.CacheClient.Close(); err != nil {
+		log.Logger().Error("failed to close cache database", zap.Error(err))
+	}
+	if err := w.vectorStore.Close(); err != nil {
+		log.Logger().Error("failed to close vector database", zap.Error(err))
 	}
 }
 
@@ -373,8 +414,13 @@ func (w *Worker) Serve() {
 		log.Logger().Fatal("failed to connect master", zap.Error(err))
 	}
 	w.masterClient = protocol.NewMasterClient(w.conn)
+	defer w.close()
 
-	go w.Sync()
+	w.syncWait.Add(1)
+	go func() {
+		defer w.syncWait.Done()
+		w.Sync()
+	}()
 	go w.Pull()
 	go w.ServeHTTP()
 
@@ -403,6 +449,8 @@ func (w *Worker) Serve() {
 
 	for {
 		select {
+		case <-w.done:
+			return
 		case tick := <-w.ticker.C:
 			if time.Since(tick) <= w.tickDuration {
 				loop()
