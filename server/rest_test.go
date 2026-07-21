@@ -14,14 +14,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/emicklei/go-restful/v3"
+	"github.com/gorse-io/gorse/common/event"
 	"github.com/gorse-io/gorse/common/expression"
 	"github.com/gorse-io/gorse/common/log"
 	"github.com/gorse-io/gorse/config"
@@ -89,6 +92,56 @@ func (suite *ServerTestSuite) marshal(v any) string {
 	s, err := json.Marshal(v)
 	suite.NoError(err)
 	return string(s)
+}
+
+type requestsHandler struct {
+	requests chan event.Request
+}
+
+func (h *requestsHandler) EmitRequest(_ context.Context, request event.Request) {
+	h.requests <- request
+}
+
+func (h *requestsHandler) EmitSnapshot(context.Context, event.Snapshot) {}
+
+func (suite *ServerTestSuite) TestEmitRequest() {
+	handler := &requestsHandler{
+		requests: make(chan event.Request, 1),
+	}
+	event.SetEventHandler(handler)
+	suite.T().Cleanup(func() { event.SetEventHandler(&event.NopHandler{}) })
+
+	body := suite.marshal(data.User{UserId: "emit-request"})
+	const responseBody = `{"RowAffected":1}`
+	before := time.Now()
+	result := apitest.New().
+		Handler(suite.handler).
+		Post("/api/user").
+		Header("X-API-Key", apiKey).
+		JSON(body).
+		Expect(suite.T()).
+		Status(http.StatusOK).
+		Body(responseBody).
+		End()
+	after := time.Now()
+	responseBytes, err := io.ReadAll(result.Response.Body)
+	suite.Require().NoError(err)
+
+	select {
+	case req := <-handler.requests:
+		suite.Equal(result.Response.Header.Get("X-Request-ID"), req.RequestID)
+		suite.EqualValues(len(body), req.RequestBytes)
+		suite.Equal(http.MethodPost, req.Method)
+		suite.Equal("/api/user", req.Route)
+		suite.Equal(http.StatusOK, req.StatusCode)
+		suite.Positive(req.ResponseTime)
+		suite.EqualValues(len(responseBytes), req.ResponseBytes)
+		suite.False(req.Timestamp.Before(before))
+		suite.False(req.Timestamp.After(after))
+		suite.Empty(req.RemoteAddr)
+	case <-time.After(time.Second):
+		suite.Fail("request event was not emitted")
+	}
 }
 
 func (suite *ServerTestSuite) TestUsers() {
