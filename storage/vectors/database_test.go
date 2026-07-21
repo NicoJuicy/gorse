@@ -83,6 +83,9 @@ func (suite *vectorsTestSuite) TestVectors() {
 	ctx := suite.T().Context()
 	err := suite.Database.AddCollection(ctx, "test", defaultVectorSize, Cosine, VectorConfig{})
 	suite.NoError(err)
+	count, err := suite.Database.CountVectors(ctx, "test")
+	suite.NoError(err)
+	suite.Zero(count)
 
 	vectorA := make([]float32, defaultVectorSize)
 	vectorA[0] = 1
@@ -103,6 +106,9 @@ func (suite *vectorsTestSuite) TestVectors() {
 		},
 	})
 	suite.NoError(err)
+	count, err = suite.Database.CountVectors(ctx, "test")
+	suite.NoError(err)
+	suite.Equal(int64(2), count)
 
 	results, err := suite.Database.QueryVectors(ctx, "test", vectorA, []string{"cat-a"}, 10)
 	suite.NoError(err)
@@ -159,6 +165,9 @@ func (suite *vectorsTestSuite) TestDeleteVectors() {
 
 	err = suite.Database.DeleteVectors(ctx, "test", cutoff)
 	suite.NoError(err)
+	count, err := suite.Database.CountVectors(ctx, "test")
+	suite.NoError(err)
+	suite.Equal(int64(1), count)
 
 	results, err := suite.Database.QueryVectors(ctx, "test", vectorA, []string{"common"}, 10)
 	suite.NoError(err)
